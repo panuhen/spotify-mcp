@@ -2,80 +2,52 @@
 
 Control Spotify playback through Claude using the Model Context Protocol (MCP).
 
-## Setup
+**No Spotify Developer account needed!** Uses PKCE authentication - just install and authorize your Spotify account.
 
-### 1. Create Spotify Developer Application
+## Quick Start
 
-1. Go to https://developer.spotify.com/dashboard
-2. Log in with your Spotify account
-3. Click "Create App"
-4. Fill in:
-   - App name: "Claude Spotify MCP"
-   - App description: "MCP server for Claude to control Spotify"
-   - Redirect URI: `http://127.0.0.1:8888/callback`
-5. Check the "Web API" checkbox
-6. Accept terms and create
-7. Copy the **Client ID** and **Client Secret**
-
-### 2. Configure Credentials
-
-Create a `.env` file in this directory (or `~/.spotify-mcp.env`):
+### 1. Install
 
 ```bash
-cp .env.example .env
-# Edit .env with your credentials
-```
-
-```
-SPOTIPY_CLIENT_ID=your_client_id_here
-SPOTIPY_CLIENT_SECRET=your_client_secret_here
-SPOTIPY_REDIRECT_URI=http://127.0.0.1:8888/callback
-```
-
-### 3. Install
-
-```bash
+git clone https://github.com/panuhen/spotify-mcp.git ~/spotify-mcp
 cd ~/spotify-mcp
-pip install -e .
+python -m venv .venv
+.venv/bin/pip install -e .
 ```
 
-### 4. First Run - Authenticate
+### 2. First Run - Authenticate
 
-Run the server once to complete OAuth:
+Run once to authorize with your Spotify account:
 
 ```bash
-spotify-mcp
+~/spotify-mcp/.venv/bin/spotify-mcp
 ```
 
-This will open your browser for Spotify authorization. After authorizing, the token is cached at `~/.spotify-mcp-token`.
+This opens your browser for Spotify login. After authorizing, the token is cached at `~/.spotify-mcp-token`.
 
-### 5. Add to Claude Code
+### 3. Add to Claude Code
 
-Add to your Claude Code MCP configuration (`~/.claude/claude_desktop_config.json`):
+Add to `~/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "spotify": {
-      "command": "spotify-mcp"
+      "command": "/home/YOUR_USER/spotify-mcp/.venv/bin/spotify-mcp"
     }
   }
 }
 ```
 
-Or with explicit path:
+Then enable in `~/.claude/settings.local.json`:
 
 ```json
 {
-  "mcpServers": {
-    "spotify": {
-      "command": "python",
-      "args": ["-m", "spotify_mcp.server"],
-      "cwd": "/home/YOUR_USER/spotify-mcp"
-    }
-  }
+  "enabledMcpjsonServers": ["spotify"]
 }
 ```
+
+Restart Claude Code and you're ready!
 
 ## Available Tools
 
@@ -114,17 +86,13 @@ Once configured, you can ask Claude:
 - "Turn on shuffle"
 - "Show my playlists"
 
-## Required Spotify Scopes
+## Advanced: Use Your Own Client ID
 
-The app requests these permissions:
-- `user-read-playback-state` - View current playback
-- `user-modify-playback-state` - Control playback
-- `user-read-currently-playing` - Get current track
-- `playlist-read-private` - Access private playlists
-- `playlist-modify-public` - Modify public playlists
-- `playlist-modify-private` - Modify private playlists
-- `user-library-read` - Access saved tracks
-- `user-library-modify` - Save/remove tracks
+If you want to use your own Spotify app (optional):
+
+1. Create an app at https://developer.spotify.com/dashboard
+2. Set redirect URI to `http://127.0.0.1:8888/callback`
+3. Set environment variable: `SPOTIPY_CLIENT_ID=your_client_id`
 
 ## Troubleshooting
 
@@ -134,5 +102,5 @@ Make sure Spotify is open on at least one device (phone, desktop app, web player
 ### Authentication issues
 Delete `~/.spotify-mcp-token` and run `spotify-mcp` again to re-authenticate.
 
-### Permission denied
-Verify your app has the Web API checkbox enabled in the Spotify Developer Dashboard.
+### Token expired
+The token auto-refreshes, but if issues persist, delete `~/.spotify-mcp-token` and re-auth.

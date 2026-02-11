@@ -9,7 +9,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .auth import get_spotify_client, validate_credentials
+from .auth import get_spotify_client
 from .spotify_client import SpotifyClient
 
 # Load environment variables from .env file
@@ -27,11 +27,6 @@ def get_client() -> SpotifyClient:
     """Get or create the Spotify client."""
     global client
     if client is None:
-        if not validate_credentials():
-            raise RuntimeError(
-                "Spotify credentials not configured. "
-                "Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET in .env file."
-            )
         client = SpotifyClient(get_spotify_client())
     return client
 
@@ -391,20 +386,6 @@ async def run_server():
 def main():
     """Entry point."""
     import asyncio
-
-    # Check credentials on startup
-    if not validate_credentials():
-        print(
-            "Error: Spotify credentials not configured.\n"
-            "Please set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET.\n"
-            "You can:\n"
-            "  1. Create a .env file in the spotify-mcp directory\n"
-            "  2. Create ~/.spotify-mcp.env\n"
-            "  3. Set environment variables directly\n\n"
-            "Get credentials from: https://developer.spotify.com/dashboard",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     asyncio.run(run_server())
 
