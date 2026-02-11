@@ -79,6 +79,14 @@ Restart Claude Code and you're ready!
 - `remove_saved_tracks` - Remove tracks from library *(requires own app)*
 - `get_saved_tracks` - Get your liked tracks
 
+### Local Favorites
+No Spotify API permissions needed - stored locally in `~/.spotify-mcp-favorites.json`:
+- `favorite_current` - Add currently playing track to favorites
+- `get_favorites` - List all favorited tracks
+- `remove_favorite` - Remove a track from favorites
+- `play_favorites` - Play random favorite or queue all favorites
+- `clear_favorites` - Clear all favorites
+
 ## Usage Examples
 
 Once configured, you can ask Claude:

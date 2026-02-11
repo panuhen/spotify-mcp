@@ -11,6 +11,7 @@ from mcp.types import TextContent, Tool
 
 from .auth import get_spotify_client
 from .spotify_client import SpotifyClient
+from . import favorites
 
 # Load environment variables from .env file
 env_path = Path(__file__).parent.parent / ".env"
@@ -334,6 +335,49 @@ TOOLS = [
             },
         },
     ),
+    # Local favorites (no Spotify API permissions needed)
+    Tool(
+        name="favorite_current",
+        description="Add the currently playing track to local favorites.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="get_favorites",
+        description="List all tracks in local favorites.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="remove_favorite",
+        description="Remove a track from local favorites.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "uri": {
+                    "type": "string",
+                    "description": "Spotify URI of the track to remove",
+                },
+            },
+            "required": ["uri"],
+        },
+    ),
+    Tool(
+        name="play_favorites",
+        description="Play tracks from local favorites. Queues all favorites or plays a random one.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "shuffle": {
+                    "type": "boolean",
+                    "description": "If true, queue all favorites in random order. If false, play one random track.",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="clear_favorites",
+        description="Clear all local favorites.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 
@@ -418,6 +462,36 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = sp.remove_saved_tracks(track_ids=arguments["track_ids"])
         elif name == "get_saved_tracks":
             result = sp.get_saved_tracks(limit=arguments.get("limit", 20))
+        # Local favorites
+        elif name == "favorite_current":
+            current = sp.get_current_track()
+            if not current.get("track"):
+                result = {"error": "No track currently playing"}
+            else:
+                track = current["track"]
+                result = favorites.add_favorite(track)
+        elif name == "get_favorites":
+            result = favorites.get_favorites()
+        elif name == "remove_favorite":
+            result = favorites.remove_favorite(arguments["uri"])
+        elif name == "play_favorites":
+            favs = favorites.get_favorites()
+            if not favs.get("favorites"):
+                result = {"error": "No favorites saved yet"}
+            else:
+                import random
+                tracks = favs["favorites"]
+                if arguments.get("shuffle"):
+                    random.shuffle(tracks)
+                    for track in tracks:
+                        sp.add_to_queue(track["uri"])
+                    result = {"success": True, "message": f"Queued {len(tracks)} favorites"}
+                else:
+                    track = random.choice(tracks)
+                    sp.play(uri=track["uri"])
+                    result = {"success": True, "message": f"Playing '{track['name']}'"}
+        elif name == "clear_favorites":
+            result = favorites.clear_favorites()
         else:
             result = {"error": f"Unknown tool: {name}"}
 
