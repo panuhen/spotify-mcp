@@ -289,6 +289,51 @@ TOOLS = [
             "required": ["playlist_id", "uris"],
         },
     ),
+    Tool(
+        name="save_tracks",
+        description="Save tracks to user's library (like/heart). Use this to add tracks to Liked Songs.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "track_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of Spotify track URIs or IDs to save",
+                },
+            },
+            "required": ["track_ids"],
+        },
+    ),
+    Tool(
+        name="remove_saved_tracks",
+        description="Remove tracks from user's library (unlike/unheart).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "track_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of Spotify track URIs or IDs to remove",
+                },
+            },
+            "required": ["track_ids"],
+        },
+    ),
+    Tool(
+        name="get_saved_tracks",
+        description="Get user's saved/liked tracks from their library.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max tracks to return (default: 20)",
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -367,6 +412,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 playlist_id=arguments["playlist_id"],
                 uris=arguments["uris"],
             )
+        elif name == "save_tracks":
+            result = sp.save_tracks(track_ids=arguments["track_ids"])
+        elif name == "remove_saved_tracks":
+            result = sp.remove_saved_tracks(track_ids=arguments["track_ids"])
+        elif name == "get_saved_tracks":
+            result = sp.get_saved_tracks(limit=arguments.get("limit", 20))
         else:
             result = {"error": f"Unknown tool: {name}"}
 

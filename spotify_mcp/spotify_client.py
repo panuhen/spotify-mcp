@@ -350,3 +350,57 @@ class SpotifyClient:
             }
         except SpotifyException as e:
             return self._handle_error(e)
+
+    def save_tracks(self, track_ids: list[str]) -> dict[str, Any]:
+        """Save tracks to user's library (like/heart)."""
+        try:
+            # Extract track IDs from URIs if needed
+            ids = []
+            for t in track_ids:
+                if t.startswith("spotify:track:"):
+                    ids.append(t.split(":")[-1])
+                else:
+                    ids.append(t)
+            self.sp.current_user_saved_tracks_add(ids)
+            return {
+                "success": True,
+                "message": f"Saved {len(ids)} track(s) to your library",
+            }
+        except SpotifyException as e:
+            return self._handle_error(e)
+
+    def remove_saved_tracks(self, track_ids: list[str]) -> dict[str, Any]:
+        """Remove tracks from user's library (unlike/unheart)."""
+        try:
+            ids = []
+            for t in track_ids:
+                if t.startswith("spotify:track:"):
+                    ids.append(t.split(":")[-1])
+                else:
+                    ids.append(t)
+            self.sp.current_user_saved_tracks_delete(ids)
+            return {
+                "success": True,
+                "message": f"Removed {len(ids)} track(s) from your library",
+            }
+        except SpotifyException as e:
+            return self._handle_error(e)
+
+    def get_saved_tracks(self, limit: int = 20) -> dict[str, Any]:
+        """Get user's saved/liked tracks."""
+        try:
+            results = self.sp.current_user_saved_tracks(limit=limit)
+            tracks = []
+            for item in results.get("items", []):
+                track = item.get("track")
+                if track:
+                    tracks.append({
+                        "name": track["name"],
+                        "uri": track["uri"],
+                        "artists": [a["name"] for a in track["artists"]],
+                        "album": track["album"]["name"],
+                        "added_at": item.get("added_at"),
+                    })
+            return {"tracks": tracks, "total": results.get("total", len(tracks))}
+        except SpotifyException as e:
+            return self._handle_error(e)
