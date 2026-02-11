@@ -2,7 +2,9 @@
 
 Control Spotify playback through Claude using the Model Context Protocol (MCP).
 
-**No Spotify Developer account needed!** Uses PKCE authentication - just install and authorize your Spotify account.
+Uses PKCE authentication - just install and authorize your Spotify account.
+
+> **Note:** The bundled client ID works for playback control and reading data. For **write operations** (adding to playlists, saving to library), you'll need to [set up your own Spotify app](#setup-your-own-spotify-app).
 
 ## Quick Start
 
@@ -72,7 +74,10 @@ Restart Claude Code and you're ready!
 - `add_to_queue` - Add track to queue
 - `get_playlists` - List your playlists
 - `get_playlist_tracks` - Get tracks from a playlist
-- `add_to_playlist` - Add tracks to a playlist
+- `add_to_playlist` - Add tracks to a playlist *(requires own app)*
+- `save_tracks` - Save tracks to your library *(requires own app)*
+- `remove_saved_tracks` - Remove tracks from library *(requires own app)*
+- `get_saved_tracks` - Get your liked tracks
 
 ## Usage Examples
 
@@ -86,13 +91,23 @@ Once configured, you can ask Claude:
 - "Turn on shuffle"
 - "Show my playlists"
 
-## Advanced: Use Your Own Client ID
+## Setup Your Own Spotify App
 
-If you want to use your own Spotify app (optional):
+**Required for:** `add_to_playlist`, `save_tracks`, `remove_saved_tracks`
+
+The bundled client ID is in Spotify's Development Mode, which restricts write operations. To use all features:
 
 1. Create an app at https://developer.spotify.com/dashboard
-2. Set redirect URI to `http://127.0.0.1:8888/callback`
-3. Set environment variable: `SPOTIPY_CLIENT_ID=your_client_id`
+2. In your app settings, add redirect URI: `http://127.0.0.1:8888/callback`
+3. Copy your Client ID and add to `~/spotify-mcp/.env`:
+   ```
+   SPOTIPY_CLIENT_ID=your_client_id_here
+   ```
+4. Delete cached token and re-auth:
+   ```bash
+   rm ~/.spotify-mcp-token
+   ```
+5. Restart the MCP server
 
 ## Troubleshooting
 

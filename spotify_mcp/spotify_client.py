@@ -21,7 +21,7 @@ class SpotifyClient:
             429: "Rate limited. Please wait and try again.",
         }
         msg = error_messages.get(e.http_status, str(e))
-        return {"error": msg, "status": e.http_status}
+        return {"error": msg, "status": e.http_status, "details": str(e)}
 
     # Playback Control
 
@@ -281,9 +281,10 @@ class SpotifyClient:
                         "name": p["name"],
                         "uri": p["uri"],
                         "owner": p["owner"]["display_name"],
-                        "tracks": p["tracks"]["total"],
+                        "tracks": p.get("tracks", {}).get("total", 0) if p.get("tracks") else 0,
                     }
                     for p in results["playlists"]["items"]
+                    if p is not None
                 ]
 
             return output
@@ -308,10 +309,11 @@ class SpotifyClient:
                         "name": p["name"],
                         "uri": p["uri"],
                         "id": p["id"],
-                        "tracks": p["tracks"]["total"],
+                        "tracks": p.get("tracks", {}).get("total", 0) if p.get("tracks") else 0,
                         "owner": p["owner"]["display_name"],
                     }
                     for p in playlists.get("items", [])
+                    if p is not None
                 ]
             }
         except SpotifyException as e:
