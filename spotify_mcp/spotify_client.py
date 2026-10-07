@@ -57,9 +57,18 @@ def _label(track: dict[str, Any]) -> str:
     return f"{name} – {artists}" if artists else name
 
 
-def _quote(text: str) -> str:
+def _short(text: str, limit: int = 40) -> str:
+    """One line, at most `limit` characters: names go into sentences meant to be spoken."""
     text = " ".join((text or "").split())
-    return f"'{text[:60]}'"
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _quote(text: str) -> str:
+    return f"'{_short(text, 60)}'"
+
+
+def _names(rows: list[dict[str, Any]]) -> str:
+    return ", ".join(_short(r["name"]) for r in rows)
 
 
 PLAYLIST_TTL = 60.0  # seconds the user's playlist list is reused between calls
@@ -562,7 +571,7 @@ class SpotifyClient:
             tier_others, others = playlists.match(text, [r for r in rows if not self._writable(r)])
             if tier_others != playlists.NONE:
                 raise self._not_yours(others[0])
-        closest = f" Closest: {', '.join(r['name'] for r in found)}." if found else ""
+        closest = f" Closest: {_names(found)}." if found else ""
         whose = "of yours" if write else "in your library"
         raise ToolError(NOT_FOUND, f"No playlist {whose} matches {_quote(text)}.{closest}")
 
@@ -571,7 +580,8 @@ class SpotifyClient:
         shown = found[:5]
         names = [r["name"] for r in shown]
         twins = {n for n in names if names.count(n) > 1}
-        listed = ", ".join(f"{r['name']} (id {r['id']})" if r["name"] in twins else r["name"] for r in shown)
+        listed = ", ".join(f"{_short(r['name'])} (id {r['id']})" if r["name"] in twins else _short(r["name"])
+                           for r in shown)
         more = f" and {len(found) - 5} more" if len(found) > 5 else ""
         return ToolError(BAD_REQUEST, f"Several playlists match {_quote(query)}: {listed}{more}. Which one?")
 
@@ -665,7 +675,7 @@ class SpotifyClient:
         else:
             tier, found = playlists.match(text, self._playlists())
             if tier == playlists.NONE:
-                closest = f" Closest: {', '.join(r['name'] for r in found)}." if found else ""
+                closest = f" Closest: {_names(found)}." if found else ""
                 raise ToolError(NOT_FOUND, f"No playlist in your library matches {_quote(text)}.{closest}")
         return {"playlists": [{"name": r["name"], "id": r["id"], "uri": r["uri"], "owned": r["owned"],
                                "tracks": r["tracks"]} for r in found[:5]]}

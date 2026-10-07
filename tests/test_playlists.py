@@ -82,6 +82,17 @@ def test_no_match_offers_the_closest():
     tier, found = playlists.match("chilout", NAMES)
     assert tier == playlists.NONE and [p["name"] for p in found] == ["Chill Vibes"]
     assert playlists.match("polka", NAMES) == (playlists.NONE, [])
+    # A word that merely looks like a word of a long name is not offered.
+    noise = [{"name": "Rolling Stone's Greatest Hip-Hop Songs of All Time"}]
+    assert playlists.match("running", noise) == (playlists.NONE, [])
+
+
+def test_long_names_are_shortened_in_messages(make):
+    long_name = "Easy Listening Classical For Study, Work, Relaxing and Anything"
+    client, _, _ = make([ME, page([row(1, long_name + " A"), row(2, long_name + " B")])])
+    with pytest.raises(ToolError) as caught:
+        client.play(playlist="easy listening")
+    assert "Easy Listening Classical For Study, Wor…" in caught.value.message
 
 
 def test_same_name_owned_beats_followed():

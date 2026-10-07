@@ -29,7 +29,7 @@ NONE = "none"
 
 FUZZY_MIN = 0.8  # a fuzzy match must score at least this (difflib ratio, 0..1)
 FUZZY_MARGIN = 0.05  # candidates this close to the best one make the fuzzy tier ambiguous
-CLOSEST_MIN = 0.55  # below FUZZY_MIN but at least this: offered as "closest" when nothing matches
+CLOSEST_MIN = 0.7  # below FUZZY_MIN but at least this: offered as "closest" when nothing matches
 
 FILLER = frozenset({"my", "the", "a", "playlist", "playlists", "list", "please", "soittolista"})
 
