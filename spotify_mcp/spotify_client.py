@@ -299,7 +299,7 @@ class SpotifyClient:
         types = [t for t in (types or []) if t in valid_types] or ["track"]
         if limit is None:
             limit = 5 if self.compact else 10
-        limit = max(1, min(50, int(limit)))
+        limit = max(1, min(10, int(limit)))  # Spotify answers 400 "Invalid limit" above 10
 
         results = self._api(self.sp.search, q=query, type=",".join(types), limit=limit) or {}
 
@@ -381,11 +381,32 @@ class SpotifyClient:
             tracks.append(row)
         return {"tracks": tracks, "total": results.get("total", len(tracks))}
 
+    def _current_or_old(self, current: Callable[[], Any], old: Callable[[], Any]) -> Any:
+        """Call Spotify's current endpoint; fall back to the older one only if it is missing (404).
+
+        In 2026 Spotify moved playlist contents to /playlists/{id}/items and library writes to
+        /me/library; the old /playlists/{id}/tracks and /me/tracks answer 403 for this app.
+        A 404 was refused before anything changed, so the fallback is safe for writes too.
+        """
+        try:
+            return current()
+        except SpotifyException as exc:
+            if exc.http_status != 404 or _is_no_device(exc):
+                raise
+            try:
+                return old()
+            except SpotifyException:
+                raise exc from None  # a real "not found" reads better than the old endpoint's 403
+
     def get_playlist_tracks(self, playlist_id: str, limit: int = 100) -> dict[str, Any]:
         """Get tracks from a playlist."""
         playlist = uris.to_id(playlist_id, "playlist", "playlist_id")
         limit = max(1, min(100, int(limit)))
-        return self._track_rows(self._api(self.sp.playlist_items, playlist, limit=limit, additional_types=("track",)) or {})
+        results = self._current_or_old(
+            lambda: self._api(self.sp._get, f"playlists/{playlist}/items", limit=limit, additional_types="track"),
+            lambda: self._api(self.sp.playlist_items, playlist, limit=limit, additional_types=("track",)),
+        )
+        return self._track_rows(results or {})
 
     def add_to_playlist(self, playlist_id: str, uris_: list[str]) -> dict[str, Any]:
         """Add tracks to a playlist."""
@@ -393,7 +414,12 @@ class SpotifyClient:
         items = [uris.to_uri(u, expect=uris.PLAYABLE_ITEMS, bare_type="track", argument="uris")[1] for u in uris_]
         if not items:
             raise ToolError(BAD_REQUEST, "uris must list at least one track.")
-        self._api(self.sp.playlist_add_items, playlist, items)
+        for start in range(0, len(items), 100):
+            chunk = items[start:start + 100]
+            self._current_or_old(
+                lambda: self._api(self.sp._post, f"playlists/{playlist}/items", payload={"uris": chunk}),
+                lambda: self._api(self.sp.playlist_add_items, playlist, chunk),
+            )
         return {"success": True, "message": f"Added {len(items)} track(s) to playlist"}
 
     @staticmethod
@@ -403,16 +429,26 @@ class SpotifyClient:
             raise ToolError(BAD_REQUEST, "track_ids must list at least one track.")
         return ids
 
+    def _library(self, verb: str, ids: list[str]) -> None:
+        current = self.sp._put if verb == "PUT" else self.sp._delete
+        old = self.sp.current_user_saved_tracks_add if verb == "PUT" else self.sp.current_user_saved_tracks_delete
+        for start in range(0, len(ids), 40):
+            chunk = ids[start:start + 40]
+            self._current_or_old(
+                lambda: self._api(current, "me/library", uris=",".join(f"spotify:track:{i}" for i in chunk)),
+                lambda: self._api(old, chunk),
+            )
+
     def save_tracks(self, track_ids: list[str]) -> dict[str, Any]:
         """Save tracks to user's library (like/heart)."""
         ids = self._track_ids(track_ids)
-        self._api(self.sp.current_user_saved_tracks_add, ids)
+        self._library("PUT", ids)
         return {"success": True, "message": f"Saved {len(ids)} track(s) to your library"}
 
     def remove_saved_tracks(self, track_ids: list[str]) -> dict[str, Any]:
         """Remove tracks from user's library (unlike/unheart)."""
         ids = self._track_ids(track_ids)
-        self._api(self.sp.current_user_saved_tracks_delete, ids)
+        self._library("DELETE", ids)
         return {"success": True, "message": f"Removed {len(ids)} track(s) from your library"}
 
     def get_saved_tracks(self, limit: int = 20) -> dict[str, Any]:

@@ -46,7 +46,8 @@ def to_uri(value: str | None, *, expect: tuple[str, ...] = TYPES, bare_type: str
         raise ToolError(BAD_REQUEST, f"{argument} must be a Spotify URI like spotify:track:<id> or an "
                         "open.spotify.com link. Use search to find one.")
     if parsed[0] not in expect:
-        raise ToolError(BAD_REQUEST, f"{argument} must be a {' or '.join(expect)}, not a {parsed[0]}.")
+        article = "an" if parsed[0][0] in "aeiou" else "a"
+        raise ToolError(BAD_REQUEST, f"{argument} must be a {' or '.join(expect)}, not {article} {parsed[0]}.")
     return parsed
 
 

@@ -202,3 +202,56 @@ def test_playlist_track_count_reads_items_or_tracks(make):
                              "items": {"total": 4}}, None]})
     client, _, _ = make([page])
     assert [p["tracks"] for p in client.get_playlists()["playlists"]] == [3, 4]
+
+
+PLAYLIST = "37i9dQZF1DXcBWIGoYBM5M"
+
+
+def test_playlist_tracks_use_the_items_endpoint(make):
+    page = (200, {"total": 1, "items": [{"added_at": "2026-01-01T00:00:00Z", "item": {
+        "name": "Blue Monday", "uri": TRACK, "artists": [{"name": "New Order"}], "album": {"name": "Substance"}}}]})
+    client, adapter, _ = make([page])
+    out = client.get_playlist_tracks(f"https://open.spotify.com/playlist/{PLAYLIST}?si=1", limit=3)
+    assert f"/playlists/{PLAYLIST}/items?" in adapter.sent[0].url
+    assert out == {"tracks": [{"name": "Blue Monday", "uri": TRACK, "artists": ["New Order"], "album": "Substance",
+                               "added_at": "2026-01-01T00:00:00Z"}], "total": 1}
+
+
+def test_playlist_tracks_fall_back_when_items_is_missing(make):
+    missing = (404, {"error": {"status": 404, "message": "Service not found"}})
+    page = (200, {"total": 0, "items": []})
+    client, adapter, _ = make([missing, page])
+    client.get_playlist_tracks(PLAYLIST)
+    assert f"/playlists/{PLAYLIST}/tracks?" in adapter.sent[1].url
+
+
+def test_add_to_playlist_posts_to_items(make):
+    client, adapter, _ = make([(201, {"snapshot_id": "x"})])
+    client.add_to_playlist(PLAYLIST, [TRACK, "https://open.spotify.com/track/6hHc7Pks7wtBIW8Z6A0iFq"])
+    assert adapter.sent[0].method == "POST" and adapter.sent[0].url.endswith(f"/playlists/{PLAYLIST}/items")
+    assert json.loads(adapter.sent[0].body) == {"uris": [TRACK, "spotify:track:6hHc7Pks7wtBIW8Z6A0iFq"]}
+
+
+def test_save_and_remove_use_the_library_endpoint(make):
+    client, adapter, _ = make([(200, None), (200, None)])
+    client.save_tracks([TRACK])
+    client.remove_saved_tracks(["6hHc7Pks7wtBIW8Z6A0iFq"])
+    assert adapter.sent[0].method == "PUT" and "/me/library?uris=spotify%3Atrack%3A4uLU6hMCjMI75M1A2tKUQC" in \
+        adapter.sent[0].url
+    assert adapter.sent[1].method == "DELETE" and "/me/library?uris=" in adapter.sent[1].url
+
+
+def test_real_not_found_is_kept_over_the_old_endpoints_403(make):
+    from spotify_mcp.errors import from_exception
+
+    missing = (404, {"error": {"status": 404, "message": "Resource not found"}})
+    client, _, _ = make([missing, (403, {"error": {"status": 403, "message": "Forbidden"}})])
+    with pytest.raises(SpotifyException) as caught:
+        client.get_playlist_tracks(PLAYLIST)
+    assert from_exception(caught.value).code == "not_found"
+
+
+def test_search_limit_is_capped_at_ten(make):
+    client, adapter, _ = make([(200, {"tracks": {"items": []}})])
+    client.search("x", limit=50)
+    assert "limit=10" in adapter.sent[0].url
