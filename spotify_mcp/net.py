@@ -67,9 +67,11 @@ STATUS_RETRIES = 2  # extra attempts after a 429 or a 5xx
 
 # Methods retried after a failure that may have reached Spotify (connection reset or closed
 # mid-request, read timeout). Spotify's GETs are reads; its PUTs and DELETEs set state (play,
-# pause, volume, shuffle, repeat, seek, transfer, save or remove tracks), so sending one twice
-# leaves the same result. POST is left out: POST /me/player/next twice skips two tracks, and
-# POST /me/player/queue or /playlists/{id}/tracks twice adds the item twice.
+# pause, volume, shuffle, repeat, seek, transfer, PUT/DELETE /me/library, and DELETE
+# /playlists/{id}/items, which removes every copy of a track), so sending one twice leaves the
+# same result. POST is left out: POST /me/player/next twice skips two tracks, POST
+# /me/player/queue or /playlists/{id}/items twice adds the item twice, and POST /me/playlists
+# twice makes two playlists.
 IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 RETRY_STATUSES = frozenset({500, 502, 503, 504})
 

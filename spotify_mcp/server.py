@@ -349,7 +349,7 @@ HANDLERS: dict[str, Callable[[SpotifyClient, dict[str, Any]], dict[str, Any]]] =
     "search": lambda sp, a: sp.search(query=_str(a, "query", required=True), types=_list(a, "types"),
                                       limit=_int(a, "limit")),
     "add_to_queue": lambda sp, a: sp.add_to_queue(uri=_str(a, "uri", required=True), device_id=_str(a, "device_id")),
-    "get_playlists": lambda sp, a: sp.get_playlists(limit=_int(a, "limit", 100)),
+    "get_playlists": lambda sp, a: sp.get_playlists(limit=_int(a, "limit", 50)),
     "get_playlist_tracks": lambda sp, a: sp.get_playlist_tracks(playlist_id=_str(a, "playlist_id", required=True),
                                                                 limit=_int(a, "limit", 100)),
     "add_to_playlist": lambda sp, a: sp.add_to_playlist(_str(a, "playlist_id", required=True),

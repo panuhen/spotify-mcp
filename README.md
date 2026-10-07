@@ -4,8 +4,6 @@ Control Spotify playback through Claude using the Model Context Protocol (MCP).
 
 Uses PKCE authentication - just install and authorize your Spotify account.
 
-> **Note:** The bundled client ID works for playback control and reading data. For **write operations** (adding to playlists, saving to library), you'll need to [set up your own Spotify app](#setup-your-own-spotify-app).
-
 ## Quick Start
 
 ### 1. Install
@@ -56,7 +54,8 @@ Restart Claude Code and you're ready!
 ## Available Tools
 
 ### Playback Control
-- `play` - Resume, or play a track (`uri`) or an album/playlist/artist (`context_uri`)
+- `play` - Resume, or play a track (`uri`), an album/playlist/artist (`context_uri`), or one of
+  your playlists by name (`playlist`)
 - `pause` - Pause playback
 - `next` - Skip to next track
 - `previous` - Go to previous track
@@ -76,14 +75,51 @@ Restart Claude Code and you're ready!
 - `add_to_queue` - Add track to queue
 - `get_playlists` - List your playlists
 - `get_playlist_tracks` - Get tracks from a playlist (Spotify refuses some playlists the user does not own: `forbidden`)
-- `add_to_playlist` - Add tracks to a playlist *(requires own app)*
-- `save_tracks` - Save tracks to your library *(requires own app)*
-- `remove_saved_tracks` - Remove tracks from library *(requires own app)*
+- `add_to_playlist` - Add tracks to a playlist by ID
+- `save_tracks` - Save tracks to Liked Songs
+- `remove_saved_tracks` - Remove tracks from Liked Songs
 - `get_saved_tracks` - Get your liked tracks
 
-Spotify moved playlist contents to `/playlists/{id}/items` and library writes to `/me/library`
-in 2026; the old endpoints answer 403. The server uses the new ones and falls back to the old
-ones only when the new one is missing (404).
+### Library & Playlists by Name
+Made for voice and small models: one call, the server finds the playing track and the playlist.
+- `like_current` - Save the playing track to Liked Songs (`already_liked` if it was there)
+- `add_current_to_playlist` - Add the playing track to one of your playlists (`playlist`: name,
+  ID, URI or link). Reads the playlist first and skips the add if the track is already there.
+  `create_if_missing: true` creates a private playlist when no name matches.
+- `find_playlist` - Your 1-5 best matching playlists for a name: name, id, uri, owned, track count
+- `remove_from_playlist` - Remove a track (`"current"`, a URI or a link) from one of your playlists
+- `create_playlist` - Create a playlist, private unless `public: true`. Refuses a name you already
+  own unless `force: true`.
+
+The write tools (`like_current`, `add_current_to_playlist`, `remove_from_playlist`,
+`create_playlist`) say so in their descriptions and carry MCP annotations
+(`remove_from_playlist` is marked destructive).
+
+Results are short, e.g. `{"liked": "Blue Monday – New Order"}`,
+`{"added": "Blue Monday – New Order", "playlist": "Running"}`, `{"already_there": …}`,
+`{"removed": …}`, `{"not_in_playlist": …}`, `{"created": "Gym", "id": …, "uri": …}`.
+
+Spotify moved playlist contents to `/playlists/{id}/items`, library writes to `/me/library` and
+playlist creation to `/me/playlists` in 2026; the old endpoints answer 403. The server uses the
+new ones and falls back to the old ones only when the new one is missing (404).
+
+## Playlist names
+
+`add_current_to_playlist`, `remove_from_playlist`, `find_playlist` and `play`'s `playlist` take a
+name and find the playlist in your library. The first rule that matches anything decides:
+
+1. the same name, ignoring case;
+2. the same after removing accents, punctuation, extra spaces and filler words ("my", "playlist");
+3. every word you said starts a word of the name ("run" finds "Running Mix"), or every word of
+   the name is in what you said;
+4. a fuzzy match (Python's `difflib` ratio of at least 0.8, on the text and on a rough
+   sound-alike spelling), so speech-to-text errors still land: "shrance" finds "Schranz".
+
+If one rule finds several playlists, the call fails with `bad_request` and lists up to five names
+so the model can ask which one. Nothing found gives `not_found` with the closest names.
+The write tools only look at playlists you own or that are collaborative; a name that only
+matches someone else's playlist gives `forbidden`. Your playlist list is cached for 60 seconds
+and re-read after every write.
 
 ### Local Favorites
 No Spotify API permissions needed - stored locally in `~/.spotify-mcp-favorites.json`:
@@ -130,14 +166,14 @@ The keys are always a subset of `error`, `code`, `status`, `details`, `message`.
 | code | Meaning |
 |---|---|
 | `no_active_device` | Nothing is playing anywhere and no device was given. |
-| `not_found` | No such track/playlist/etc., or nothing is playing (`favorite_current`). |
+| `not_found` | No such track/playlist/etc., no playlist matches the name, or nothing is playing (`like_current`, `add_current_to_playlist`, `favorite_current`). |
 | `rate_limited` | Spotify sent 429 with a longer wait than the server will sit through; the message says when to retry. |
 | `network` | Spotify could not be reached, or did not answer within the call's time budget. |
 | `auth` | Not signed in, or the sign-in expired or was revoked. Run `spotify-mcp --login`. |
 | `premium_required` | The command needs Spotify Premium. |
 | `restricted` | Spotify refused a player command ("Restriction violated"): usually already playing/paused, or the device does not allow it. |
-| `forbidden` | Spotify does not let this app do that (403), e.g. a playlist the user does not own. |
-| `bad_request` | A missing or invalid argument, or Spotify rejected the request (400). |
+| `forbidden` | Spotify does not let this app do that (403), or a write to a playlist the user does not own. |
+| `bad_request` | A missing or invalid argument, several playlists match a name, or Spotify rejected the request (400). |
 | `unavailable` | Spotify answered with a 5xx. |
 | `internal` | A bug in this server; details go to its stderr log. |
 
@@ -154,8 +190,9 @@ for a number, `"on"`/`"off"` for a boolean, `"all"`/`"one"` for repeat, a single
   - before anything was sent (refused, DNS, connect timeout): any request, up to twice;
   - after the request may have been sent (reset, closed without answer, read timeout): only
     GET, PUT and DELETE, which set state and are safe to repeat (play, pause, volume, shuffle,
-    repeat, seek, transfer, save/remove tracks). POST is not repeated, because `next`,
-    `previous`, `add_to_queue` and `add_to_playlist` would act twice;
+    repeat, seek, transfer, save/remove tracks, remove from a playlist). POST is not repeated,
+    because `next`, `previous`, `add_to_queue`, `add_to_playlist`, `add_current_to_playlist`
+    and `create_playlist` would act twice;
   - the token refresh (a POST) is retried, because the next call would retry it anyway.
 - **IPv4 first.** New connections try IPv4 addresses first and give each address 1.5 seconds,
   so a broken IPv6 route costs nothing instead of a full timeout per connection.
@@ -196,12 +233,13 @@ Once configured, you can ask Claude:
 - "Set the volume to 50%"
 - "Turn on shuffle"
 - "Show my playlists"
+- "I like this song" (`like_current`)
+- "Add this to my running playlist" (`add_current_to_playlist`)
+- "Play my Schranz playlist" (`play` with `playlist`)
 
 ## Setup Your Own Spotify App
 
-**Required for:** `add_to_playlist`, `save_tracks`, `remove_saved_tracks`
-
-The bundled client ID is in Spotify's Development Mode, which restricts write operations. To use all features:
+Optional. Every tool, writes included, works with the bundled client ID. To use your own app instead:
 
 1. Create an app at https://developer.spotify.com/dashboard
 2. In your app settings, add redirect URI: `http://127.0.0.1:8888/callback`

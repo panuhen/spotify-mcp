@@ -368,3 +368,9 @@ def test_missing_arguments(use, tool, args, missing):  # noqa: F811
     assert server.run_tool(tool, args) == ({"error": f"Missing argument: {missing}.", "code": "bad_request"}, True)
 
 
+
+
+def test_get_playlists_default_limit_is_fifty(use):  # noqa: F811
+    adapter = use([page([])])
+    server.run_tool("get_playlists", {})
+    assert "limit=50" in adapter.sent[0].url
