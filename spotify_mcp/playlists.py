@@ -129,8 +129,9 @@ def match(query: str, playlists: list[dict[str, Any]]) -> tuple[str, list[dict[s
 
     # (best score on any run of words, score on the whole name): "shrance" fits both "Schranz"
     # and "Hard Schranz 2024" word for word, but "Schranz" is the closer name.
-    scored = sorted((((similarity(query, p.get("name") or ""), _score(q_key, key(p.get("name") or ""))), p)
-                     for p in playlists), key=lambda pair: (-pair[0][0], -pair[0][1], normalize(pair[1].get("name", ""))))
+    scored = [((similarity(query, p.get("name") or ""), _score(q_key, key(p.get("name") or ""))), p)
+              for p in playlists]
+    scored.sort(key=lambda pair: (-pair[0][0], -pair[0][1], normalize(pair[1].get("name", ""))))
     if scored and scored[0][0][0] >= FUZZY_MIN and len(sound(query)) >= 3:
         best, best_whole = scored[0][0]
         return FUZZY, [p for (score, whole), p in scored
