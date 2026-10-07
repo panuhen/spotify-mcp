@@ -81,7 +81,8 @@ def _spotify_message(exc: SpotifyException) -> str:
     msg = str(getattr(exc, "msg", "") or "")
     if ":\n" in msg:
         msg = msg.split(":\n", 1)[1]
-    return clean(msg)
+    msg = clean(msg)
+    return "" if msg == "None" else msg
 
 
 def _seconds(value: Any) -> int | None:

@@ -296,3 +296,27 @@ def test_retry_after_parsing():
     assert net.retry_after_seconds(response) == 7.0
     response.headers["Retry-After"] = "soon"
     assert net.retry_after_seconds(response) is None
+
+
+def test_connect_stays_inside_the_call_budget(monkeypatch):
+    timeouts = []
+
+    class Blackhole(socket.socket):
+        def connect(self, address):
+            timeouts.append(self.gettimeout())
+            raise TimeoutError("timed out")
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"192.0.2.{i}", 443)) for i in range(1, 5)])
+    monkeypatch.setattr(socket, "socket", Blackhole)
+    with net.call_budget(0.5):
+        with pytest.raises(TimeoutError):
+            net.create_connection(("api.example", 443), 3.0)
+    assert all(t <= 0.5 for t in timeouts)
+
+
+def test_body_read_timeout_is_retried_for_get():
+    from urllib3.exceptions import ReadTimeoutError
+
+    exc = requests.exceptions.ConnectionError(ReadTimeoutError(None, "/v1/me", "Read timed out."))
+    assert net.failure_kind(exc) == net.MAYBE_SENT

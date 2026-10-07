@@ -205,7 +205,7 @@ def _int(args: dict[str, Any], name: str, default: int | None = None, required: 
         raise ToolError(BAD_REQUEST, f"{name} must be a number.")
     try:
         return int(round(float(str(value).strip().rstrip("%"))))
-    except ValueError:
+    except (ValueError, OverflowError):
         raise ToolError(BAD_REQUEST, f"{name} must be a number.") from None
 
 

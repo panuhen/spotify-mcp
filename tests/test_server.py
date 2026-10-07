@@ -114,3 +114,9 @@ def test_tool_list_unchanged():
                      "add_to_queue", "get_playlists", "get_playlist_tracks", "add_to_playlist", "save_tracks",
                      "remove_saved_tracks", "get_saved_tracks", "favorite_current", "get_favorites",
                      "remove_favorite", "play_favorites", "clear_favorites"]
+
+
+def test_absurd_number_is_a_bad_request(use):
+    use([])
+    data, is_error = server.run_tool("seek", {"position_ms": "inf"})
+    assert is_error and data["code"] == "bad_request"

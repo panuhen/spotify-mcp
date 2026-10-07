@@ -39,6 +39,7 @@ from urllib3.exceptions import (
     NameResolutionError,
     NewConnectionError,
     ProtocolError,
+    ReadTimeoutError,
 )
 from urllib3.util import connection as u3_connection
 
@@ -141,6 +142,9 @@ def create_connection(
             sock = socket.socket(family, socktype, proto)
             u3_connection._set_socket_options(sock, socket_options)
             per_address = full if last else min(full or PER_ADDRESS_CONNECT, PER_ADDRESS_CONNECT)
+            left = time_left()
+            if left is not None:  # several slow addresses must not outlast the call's budget
+                per_address = max(0.1, min(per_address if per_address is not None else left, left))
             sock.settimeout(per_address)
             if source_address:
                 sock.bind(source_address)
@@ -223,7 +227,7 @@ def failure_kind(exc: BaseException) -> str | None:
     if isinstance(exc, (requests.exceptions.ReadTimeout, requests.exceptions.ChunkedEncodingError)):
         return MAYBE_SENT
     if isinstance(exc, requests.exceptions.ConnectionError) and any(
-        isinstance(c, (ProtocolError, http.client.RemoteDisconnected, ConnectionResetError,
+        isinstance(c, (ProtocolError, ReadTimeoutError, http.client.RemoteDisconnected, ConnectionResetError,
                        ConnectionAbortedError, BrokenPipeError))
         for c in causes
     ):

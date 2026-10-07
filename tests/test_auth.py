@@ -98,3 +98,25 @@ def test_force_refresh(tmp_path, fake_adapter):
     m.cache_handler.save_token_to_cache({**TOKEN, "expires_at": 2**40})
     m.force_refresh()
     assert m.cache_handler.get_cached_token()["access_token"] == "forced"
+
+
+def test_login_recovers_from_a_revoked_refresh_token(monkeypatch):
+    calls = []
+
+    def fake_get_access_token(self, code=None, check_cache=True):
+        calls.append(check_cache)
+        if check_cache:
+            from spotipy.oauth2 import SpotifyOauthError
+            raise SpotifyOauthError("x", error="invalid_grant")
+        return "new"
+
+    monkeypatch.setattr(auth.ServerPKCE, "get_access_token", fake_get_access_token)
+    auth.login()
+    assert calls == [True, False]
+
+
+def test_failed_save_leaves_no_temp_file(tmp_path):
+    handler = auth.SafeCacheFileHandler(cache_path=str(tmp_path / "token"))
+    with pytest.raises(TypeError):
+        handler.save_token_to_cache({"bad": object()})
+    assert list(tmp_path.iterdir()) == []

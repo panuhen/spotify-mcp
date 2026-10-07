@@ -11,7 +11,7 @@ from typing import Any
 
 import spotipy
 from spotipy.cache_handler import CacheFileHandler
-from spotipy.oauth2 import SpotifyPKCE
+from spotipy.oauth2 import SpotifyOauthError, SpotifyPKCE
 
 from . import net
 from .errors import LoginRequired
@@ -73,12 +73,14 @@ class SafeCacheFileHandler(CacheFileHandler):
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp, path)
-        except OSError as exc:
-            log.warning("could not write the token cache (%s)", type(exc).__name__)
+        except BaseException as exc:
             try:
                 tmp.unlink()
             except OSError:
                 pass
+            if not isinstance(exc, OSError):
+                raise
+            log.warning("could not write the token cache (%s)", type(exc).__name__)
 
 
 class ServerPKCE(SpotifyPKCE):
@@ -135,7 +137,10 @@ def get_spotify_client(auth_manager: ServerPKCE | None = None) -> spotipy.Spotif
 def login() -> None:
     """Interactive sign-in for `spotify-mcp --login`: opens the browser, caches the token."""
     manager = make_auth_manager(interactive=True)
-    manager.get_access_token()
+    try:
+        manager.get_access_token()
+    except SpotifyOauthError:  # the cached refresh token was revoked or expired: sign in afresh
+        manager.get_access_token(check_cache=False)
     print(f"Signed in. Token cached at {TOKEN_CACHE_PATH}.")
 
 

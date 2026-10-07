@@ -87,3 +87,8 @@ def test_clean_removes_urls_and_tokens():
                         + "A" * 60)
     assert "http" not in text and "abc.def" not in text and "A" * 40 not in text
     assert text.startswith("Bad")
+
+
+def test_missing_spotify_message_gives_no_details():
+    body = errors.from_exception(SpotifyException(500, -1, "https://api.spotify.com/v1/me:\n None")).as_dict()
+    assert "details" not in body
