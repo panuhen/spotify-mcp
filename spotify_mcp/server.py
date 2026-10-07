@@ -13,7 +13,7 @@ from typing import Any
 from dotenv import load_dotenv
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 
 from . import favorites, net, uris
 from .auth import get_spotify_client
@@ -49,21 +49,29 @@ _NO_ARGS: dict[str, Any] = {"type": "object", "properties": {}}
 
 
 def _tool(name: str, description: str, properties: dict[str, Any] | None = None,
-          required: list[str] | None = None) -> Tool:
+          required: list[str] | None = None, annotations: ToolAnnotations | None = None) -> Tool:
     schema: dict[str, Any] = {"type": "object", "properties": properties or {}}
     if required:
         schema["required"] = required
-    return Tool(name=name, description=description, inputSchema=schema)
+    return Tool(name=name, description=description, inputSchema=schema, annotations=annotations)
+
+
+_PLAYLIST = {"type": "string", "description": "Playlist name, ID or link."}
+# Hints for clients that read them; the descriptions say the same for those that do not.
+_READ = ToolAnnotations(readOnlyHint=True)
+_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
 TOOLS = [
     _tool(
         "play",
         "Play or resume music. No arguments: resume. A track: give uri. An album, playlist or artist: "
-        "give context_uri. Use URIs from search.",
+        "give context_uri. One of the user's playlists: give playlist. Use URIs from search.",
         {
             "uri": {"type": "string", "description": "Track URI, e.g. spotify:track:<id>."},
             "context_uri": {"type": "string", "description": "Album, playlist or artist URI."},
+            "playlist": {"type": "string", "description": "The user's playlist by name, ID or link."},
             "device_id": _DEVICE,
         },
     ),
@@ -155,6 +163,40 @@ TOOLS = [
         "get_saved_tracks",
         "List Liked Songs, newest first.",
         {"limit": {"type": "integer", "description": "Default 20.", "minimum": 1, "maximum": 50}},
+    ),
+    _tool("like_current", "Save the playing track to Liked Songs. Changes the user's library.",
+          annotations=_WRITE),
+    _tool(
+        "add_current_to_playlist",
+        "Add the playing track to one of the user's playlists. Needs playlist. Skipped if already there. "
+        "Changes the user's library.",
+        {"playlist": _PLAYLIST,
+         "create_if_missing": {"type": "boolean", "description": "Create it (private) if no playlist matches. "
+                               "Default false."}},
+        ["playlist"], _WRITE,
+    ),
+    _tool(
+        "find_playlist",
+        "Find the user's playlists by name. Needs query. Returns id and uri.",
+        {"query": {"type": "string", "description": "Playlist name; spelling may be rough."}},
+        ["query"], _READ,
+    ),
+    _tool(
+        "remove_from_playlist",
+        "Remove a track from one of the user's playlists. Needs playlist and track. Destructive: changes the "
+        "user's library.",
+        {"playlist": _PLAYLIST,
+         "track": {"type": "string", "description": "\"current\" for the playing track, or a track URI or link."}},
+        ["playlist", "track"], _DESTRUCTIVE,
+    ),
+    _tool(
+        "create_playlist",
+        "Create a playlist. Needs name. Private unless public=true. Changes the user's library.",
+        {"name": {"type": "string", "description": "Playlist name."},
+         "description": {"type": "string", "description": "Optional."},
+         "public": {"type": "boolean", "description": "Default false."},
+         "force": {"type": "boolean", "description": "Create even if one by that name exists. Default false."}},
+        ["name"], _WRITE,
     ),
     # Local favorites (no Spotify API permissions needed)
     _tool("favorite_current", "Add the playing track to local favorites (not Liked Songs)."),
@@ -291,7 +333,7 @@ def _play_favorites(sp: SpotifyClient, args: dict[str, Any]) -> dict[str, Any]:
 
 HANDLERS: dict[str, Callable[[SpotifyClient, dict[str, Any]], dict[str, Any]]] = {
     "play": lambda sp, a: sp.play(uri=_str(a, "uri"), context_uri=_str(a, "context_uri"),
-                                  device_id=_str(a, "device_id")),
+                                  device_id=_str(a, "device_id"), playlist=_str(a, "playlist")),
     "pause": lambda sp, a: sp.pause(device_id=_str(a, "device_id")),
     "next": lambda sp, a: sp.next_track(device_id=_str(a, "device_id")),
     "previous": lambda sp, a: sp.previous_track(device_id=_str(a, "device_id")),
@@ -315,6 +357,15 @@ HANDLERS: dict[str, Callable[[SpotifyClient, dict[str, Any]], dict[str, Any]]] =
     "save_tracks": lambda sp, a: sp.save_tracks(track_ids=_list(a, "track_ids", required=True)),
     "remove_saved_tracks": lambda sp, a: sp.remove_saved_tracks(track_ids=_list(a, "track_ids", required=True)),
     "get_saved_tracks": lambda sp, a: sp.get_saved_tracks(limit=_int(a, "limit", 20)),
+    "like_current": lambda sp, a: sp.like_current(),
+    "add_current_to_playlist": lambda sp, a: sp.add_current_to_playlist(
+        _str(a, "playlist", required=True), create_if_missing=_bool(a, "create_if_missing", default=False)),
+    "find_playlist": lambda sp, a: sp.find_playlist(_str(a, "query", required=True)),
+    "remove_from_playlist": lambda sp, a: sp.remove_from_playlist(_str(a, "playlist", required=True),
+                                                                  _str(a, "track", required=True)),
+    "create_playlist": lambda sp, a: sp.create_playlist(_str(a, "name", required=True), _str(a, "description"),
+                                                        public=_bool(a, "public", default=False),
+                                                        force=_bool(a, "force", default=False)),
     "favorite_current": _favorite_current,
     "play_favorites": _play_favorites,
 }

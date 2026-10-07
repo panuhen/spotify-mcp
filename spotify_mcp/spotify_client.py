@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import time
 from collections.abc import Callable
 from typing import Any
 
 import spotipy
 from spotipy.exceptions import SpotifyException
 
-from . import uris
-from .errors import BAD_REQUEST, NO_ACTIVE_DEVICE, ToolError, from_spotify
+from . import playlists, uris
+from .errors import BAD_REQUEST, FORBIDDEN, NO_ACTIVE_DEVICE, NOT_FOUND, ToolError, from_spotify
 
 log = logging.getLogger("spotify_mcp.client")
 
@@ -48,6 +50,27 @@ def _is_no_device(exc: SpotifyException) -> bool:
     return from_spotify(exc).code == NO_ACTIVE_DEVICE
 
 
+def _label(track: dict[str, Any]) -> str:
+    """The short form results use: "Track – Artist"."""
+    artists = ", ".join(a for a in _artists(track)[:2] if a)
+    name = track.get("name") or "Unknown track"
+    return f"{name} – {artists}" if artists else name
+
+
+def _quote(text: str) -> str:
+    text = " ".join((text or "").split())
+    return f"'{text[:60]}'"
+
+
+PLAYLIST_TTL = 60.0  # seconds the user's playlist list is reused between calls
+# Playlist contents, only what dedupe and results need. Spotify calls the entry "item" now and
+# called it "track" before.
+_ITEM_FIELDS = "items(item(uri,name,artists(name)),track(uri,name,artists(name))),next,total"
+_CURRENT = frozenset({"current", "now", "this", "playing", "current track", "current song", "this track",
+                      "this song", "now playing", "currently playing"})
+_BARE_ID = re.compile(r"^[A-Za-z0-9]{22}$")
+
+
 class SpotifyClient:
     """Wrapper around spotipy: compact results, one retry after a 401, URI clean-up."""
 
@@ -56,6 +79,8 @@ class SpotifyClient:
         self.auto_device = AUTO_DEVICE if auto_device is None else auto_device
         self.compact = COMPACT if compact is None else compact
         self.last_device: dict[str, Any] | None = None  # the last device seen active
+        self._user: str | None = None
+        self._playlist_cache: tuple[float, list[dict[str, Any]]] | None = None
 
     def _api(self, call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Call spotipy; on a 401 refresh the token once and try again."""
@@ -107,12 +132,18 @@ class SpotifyClient:
         context_uri: str | None = None,
         device_id: str | None = None,
         position_ms: int = 0,
+        playlist: str | None = None,
     ) -> dict[str, Any]:
         """Resume playback, or play a track (uris) or an album/playlist/artist (context).
 
         A track given as context_uri (Spotify answers 400 "Non supported context uri") goes in
         `uris` instead, and an album given as uri goes in context_uri. Links become URIs.
+        `playlist` is one of the user's playlists by name, ID, URI or link.
         """
+        if playlist:
+            if context_uri:
+                raise ToolError(BAD_REQUEST, "Give playlist or context_uri, not both.")
+            context_uri = self._playlist(playlist, write=False)["uri"]
         target = self._play_target(uri, context_uri)
         if position_ms:
             target["position_ms"] = position_ms
@@ -455,3 +486,235 @@ class SpotifyClient:
         """Get user's saved/liked tracks."""
         limit = max(1, min(50, int(limit)))
         return self._track_rows(self._api(self.sp.current_user_saved_tracks, limit=limit) or {})
+
+    # Playlists by name, Liked Songs and the playing track
+
+    def _user_id(self) -> str:
+        if self._user is None:
+            self._user = (self._api(self.sp.current_user) or {}).get("id") or ""
+        return self._user
+
+    def _forget_playlists(self) -> None:
+        self._playlist_cache = None
+
+    def _playlist_row(self, p: dict[str, Any], me: str) -> dict[str, Any]:
+        return {
+            "name": p.get("name") or "",
+            "id": p["id"],
+            "uri": p.get("uri") or f"spotify:playlist:{p['id']}",
+            "owned": bool(me) and (p.get("owner") or {}).get("id") == me,
+            "collaborative": bool(p.get("collaborative")),
+            "tracks": _total(p),
+        }
+
+    def _playlists(self) -> list[dict[str, Any]]:
+        """Every playlist in the user's library, reused for PLAYLIST_TTL seconds."""
+        now = time.monotonic()
+        if self._playlist_cache and now - self._playlist_cache[0] < PLAYLIST_TTL:
+            return self._playlist_cache[1]
+        me = self._user_id()
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        for _page in range(20):  # 1000 playlists
+            page = self._api(self.sp.current_user_playlists, limit=50, offset=offset) or {}
+            items = page.get("items") or []
+            rows.extend(self._playlist_row(p, me) for p in items if p and p.get("id"))
+            offset += len(items)
+            if not items or not page.get("next"):
+                break
+        self._playlist_cache = (now, rows)
+        return rows
+
+    @staticmethod
+    def _writable(row: dict[str, Any]) -> bool:
+        return bool(row.get("owned") or row.get("collaborative"))
+
+    @staticmethod
+    def _not_yours(row: dict[str, Any]) -> ToolError:
+        return ToolError(FORBIDDEN, f"The playlist {_quote(row['name'])} belongs to someone else. Spotify only lets "
+                         "you change your own or collaborative playlists.")
+
+    def _playlist(self, query: str | None, *, write: bool) -> dict[str, Any]:
+        """The playlist a name, ID, URI or link means. write=True: one the user may change."""
+        text = (query or "").strip()
+        if not text:
+            raise ToolError(BAD_REQUEST, "Missing argument: playlist.")
+        rows = self._playlists()
+        parsed = uris.parse(text)
+        if parsed and parsed[0] != "playlist":
+            raise ToolError(BAD_REQUEST, f"playlist must be a playlist, not a {parsed[0]}.")
+        playlist_id = parsed[1].rsplit(":", 1)[1] if parsed else None
+        if playlist_id is None and _BARE_ID.match(text) and not any(r["name"] == text for r in rows):
+            playlist_id = text
+        if playlist_id:
+            row = next((r for r in rows if r["id"] == playlist_id), None) or self._fetch_playlist(playlist_id)
+            if write and not self._writable(row):
+                raise self._not_yours(row)
+            return row
+
+        pool = [r for r in rows if self._writable(r)] if write else rows
+        tier, found = playlists.match(text, pool)
+        if tier != playlists.NONE:
+            if len(found) == 1:
+                return found[0]
+            raise self._ambiguous(text, found)
+        if write:
+            tier_others, others = playlists.match(text, [r for r in rows if not self._writable(r)])
+            if tier_others != playlists.NONE:
+                raise self._not_yours(others[0])
+        closest = f" Closest: {', '.join(r['name'] for r in found)}." if found else ""
+        whose = "of yours" if write else "in your library"
+        raise ToolError(NOT_FOUND, f"No playlist {whose} matches {_quote(text)}.{closest}")
+
+    @staticmethod
+    def _ambiguous(query: str, found: list[dict[str, Any]]) -> ToolError:
+        shown = found[:5]
+        names = [r["name"] for r in shown]
+        twins = {n for n in names if names.count(n) > 1}
+        listed = ", ".join(f"{r['name']} (id {r['id']})" if r["name"] in twins else r["name"] for r in shown)
+        more = f" and {len(found) - 5} more" if len(found) > 5 else ""
+        return ToolError(BAD_REQUEST, f"Several playlists match {_quote(query)}: {listed}{more}. Which one?")
+
+    def _fetch_playlist(self, playlist_id: str) -> dict[str, Any]:
+        """A playlist that is not in the user's library list, by ID."""
+        p = self._api(self.sp._get, f"playlists/{playlist_id}", fields="id,name,uri,owner(id),collaborative") or {}
+        if not p.get("id"):
+            raise ToolError(NOT_FOUND, "Spotify could not find that playlist.")
+        return self._playlist_row(p, self._user_id())
+
+    def _playlist_items(self, playlist_id: str) -> dict[str, dict[str, Any]]:
+        """uri -> track for everything in a playlist."""
+        found: dict[str, dict[str, Any]] = {}
+        offset = 0
+        for _page in range(100):  # Spotify's limit is 10,000 items
+            page = self._current_or_old(
+                lambda: self._api(self.sp._get, f"playlists/{playlist_id}/items", limit=100, offset=offset,
+                                  fields=_ITEM_FIELDS, additional_types="track,episode"),
+                lambda: self._api(self.sp.playlist_items, playlist_id, limit=100, offset=offset,
+                                  additional_types=("track", "episode")),
+            ) or {}
+            items = page.get("items") or []
+            for entry in items:
+                track = (entry or {}).get("item") or (entry or {}).get("track")
+                if track and track.get("uri"):
+                    found.setdefault(track["uri"], track)
+            offset += len(items)
+            if not items or not page.get("next"):
+                break
+        return found
+
+    def _now_playing(self) -> dict[str, Any]:
+        """The track playing (or paused) now."""
+        current = self._api(self.sp.current_user_playing_track) or {}
+        track = current.get("item")
+        if not track or not track.get("uri"):
+            raise ToolError(NOT_FOUND, "Nothing is playing right now.")
+        if track["uri"].startswith("spotify:local:"):
+            raise ToolError(BAD_REQUEST, "This is a local file. Spotify can only save its own tracks.")
+        return track
+
+    def _liked(self, uri: str) -> bool:
+        track_id = uri.rsplit(":", 1)[1]
+        answer = self._current_or_old(
+            lambda: self._api(self.sp._get, "me/library/contains", uris=uri),
+            lambda: self._api(self.sp.current_user_saved_tracks_contains, [track_id]),
+        )
+        return bool(answer and answer[0])
+
+    def like_current(self) -> dict[str, Any]:
+        """Save the playing track to Liked Songs, unless it is there already."""
+        track = self._now_playing()
+        uri = track["uri"]
+        if self._liked(uri):
+            return {"already_liked": _label(track)}
+        self._current_or_old(
+            lambda: self._api(self.sp._put, "me/library", uris=uri),
+            lambda: self._api(self.sp.current_user_saved_tracks_add, [uri.rsplit(":", 1)[1]]),
+        )
+        return {"liked": _label(track)}
+
+    def add_current_to_playlist(self, playlist: str, create_if_missing: bool = False) -> dict[str, Any]:
+        """Add the playing track to one of the user's playlists, once."""
+        track = self._now_playing()
+        uri = track["uri"]
+        created = False
+        try:
+            target = self._playlist(playlist, write=True)
+        except ToolError as exc:
+            by_name = uris.parse(playlist) is None and not _BARE_ID.match(playlist.strip())
+            if not (create_if_missing and exc.code == NOT_FOUND and by_name):
+                raise
+            target = self._create_playlist(playlist.strip().strip("\"'“”‘’"), None, False)
+            created = True
+        if not created and uri in self._playlist_items(target["id"]):
+            return {"already_there": _label(track), "playlist": target["name"]}
+        # POST is never retried after a failure that may have reached Spotify (net.py), so a
+        # lost answer cannot add the track twice.
+        self._api(self.sp._post, f"playlists/{target['id']}/items", payload={"uris": [uri]})
+        self._forget_playlists()
+        result: dict[str, Any] = {"added": _label(track), "playlist": target["name"]}
+        if created:
+            result["created"] = True
+        return result
+
+    def find_playlist(self, query: str) -> dict[str, Any]:
+        """The best 1-5 of the user's playlists for a name, ID, URI or link."""
+        text = (query or "").strip()
+        if uris.parse(text) or _BARE_ID.match(text):
+            found = [self._playlist(text, write=False)]
+        else:
+            tier, found = playlists.match(text, self._playlists())
+            if tier == playlists.NONE:
+                closest = f" Closest: {', '.join(r['name'] for r in found)}." if found else ""
+                raise ToolError(NOT_FOUND, f"No playlist in your library matches {_quote(text)}.{closest}")
+        return {"playlists": [{"name": r["name"], "id": r["id"], "uri": r["uri"], "owned": r["owned"],
+                               "tracks": r["tracks"]} for r in found[:5]]}
+
+    def remove_from_playlist(self, playlist: str, track: str) -> dict[str, Any]:
+        """Remove a track ("current", a URI or a link) from one of the user's playlists."""
+        current = None
+        if (track or "").strip().lower() in _CURRENT:
+            current = self._now_playing()
+            uri = current["uri"]
+        else:
+            uri = uris.to_uri(track, expect=uris.PLAYABLE_ITEMS, bare_type="track", argument="track")[1]
+        target = self._playlist(playlist, write=True)
+        items = self._playlist_items(target["id"])
+        label = _label(current or items.get(uri) or {"name": uri})
+        if uri not in items:
+            return {"not_in_playlist": label, "playlist": target["name"]}
+        self._current_or_old(
+            lambda: self._api(self.sp._delete, f"playlists/{target['id']}/items", payload={"items": [{"uri": uri}]}),
+            lambda: self._api(self.sp.playlist_remove_all_occurrences_of_items, target["id"], [uri]),
+        )
+        self._forget_playlists()
+        return {"removed": label, "playlist": target["name"]}
+
+    def _create_playlist(self, name: str, description: str | None, public: bool) -> dict[str, Any]:
+        body: dict[str, Any] = {"name": name, "public": bool(public)}
+        if description:
+            body["description"] = description
+        made = self._current_or_old(
+            lambda: self._api(self.sp._post, "me/playlists", payload=body),
+            lambda: self._api(self.sp.user_playlist_create, self._user_id(), name, public=bool(public),
+                              description=description or ""),
+        ) or {}
+        self._forget_playlists()
+        if not made.get("id"):
+            raise ToolError(BAD_REQUEST, "Spotify did not return the new playlist.")
+        return {"name": made.get("name") or name, "id": made["id"],
+                "uri": made.get("uri") or f"spotify:playlist:{made['id']}"}
+
+    def create_playlist(self, name: str, description: str | None = None, public: bool = False,
+                        force: bool = False) -> dict[str, Any]:
+        """Create a playlist; refuse a second one with the name of one the user owns, unless forced."""
+        name = (name or "").strip()
+        if not name:
+            raise ToolError(BAD_REQUEST, "Missing argument: name.")
+        if not force:
+            same = [r for r in self._playlists() if r["owned"] and playlists.same_name(r["name"], name)]
+            if same:
+                raise ToolError(BAD_REQUEST, f"You already have a playlist called {_quote(same[0]['name'])}. "
+                                "Use it, or pass force=true to make another.")
+        made = self._create_playlist(name, description, public)
+        return {"created": made["name"], "id": made["id"], "uri": made["uri"]}

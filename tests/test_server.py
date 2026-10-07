@@ -107,13 +107,60 @@ def test_local_tools_work_without_spotify(monkeypatch):
     assert not is_error and data == {"favorites": [], "total": 0}
 
 
-def test_tool_list_unchanged():
+# Every tool and argument main had, as (arguments, required). Clients call these by name, and
+# Strawberry lists its careful tools by name: none may disappear, be renamed, or become required.
+MAIN_TOOLS = {
+    "play": (["context_uri", "device_id", "uri"], []),
+    "pause": (["device_id"], []),
+    "next": (["device_id"], []),
+    "previous": (["device_id"], []),
+    "seek": (["device_id", "position_ms"], ["position_ms"]),
+    "set_volume": (["device_id", "volume"], ["volume"]),
+    "shuffle": (["device_id", "state"], ["state"]),
+    "repeat": (["device_id", "state"], ["state"]),
+    "get_current_track": ([], []),
+    "get_playback_state": ([], []),
+    "get_queue": ([], []),
+    "get_devices": ([], []),
+    "search": (["limit", "query", "types"], ["query"]),
+    "add_to_queue": (["device_id", "uri"], ["uri"]),
+    "get_playlists": (["limit"], []),
+    "get_playlist_tracks": (["limit", "playlist_id"], ["playlist_id"]),
+    "add_to_playlist": (["playlist_id", "uris"], ["playlist_id", "uris"]),
+    "save_tracks": (["track_ids"], ["track_ids"]),
+    "remove_saved_tracks": (["track_ids"], ["track_ids"]),
+    "get_saved_tracks": (["limit"], []),
+    "favorite_current": ([], []),
+    "get_favorites": ([], []),
+    "remove_favorite": (["uri"], ["uri"]),
+    "play_favorites": (["shuffle"], []),
+    "clear_favorites": ([], []),
+}
+NEW_TOOLS = ["like_current", "add_current_to_playlist", "find_playlist", "remove_from_playlist", "create_playlist"]
+
+
+def test_existing_tools_keep_their_names_and_arguments():
+    tools = {tool.name: tool.inputSchema for tool in asyncio.run(server.list_tools())}
+    for name, (arguments, required) in MAIN_TOOLS.items():
+        assert name in tools, name
+        assert set(arguments) <= set(tools[name]["properties"]), name
+        assert sorted(tools[name].get("required", [])) == required, name
+
+
+def test_tool_list_is_main_plus_the_new_tools():
     names = [tool.name for tool in asyncio.run(server.list_tools())]
-    assert names == ["play", "pause", "next", "previous", "seek", "set_volume", "shuffle", "repeat",
-                     "get_current_track", "get_playback_state", "get_queue", "get_devices", "search",
-                     "add_to_queue", "get_playlists", "get_playlist_tracks", "add_to_playlist", "save_tracks",
-                     "remove_saved_tracks", "get_saved_tracks", "favorite_current", "get_favorites",
-                     "remove_favorite", "play_favorites", "clear_favorites"]
+    assert sorted(names) == sorted(list(MAIN_TOOLS) + NEW_TOOLS)
+    assert len(set(names)) == len(names)
+    assert set(server.HANDLERS) | set(server.LOCAL_HANDLERS) == set(names)
+
+
+def test_write_tools_say_they_change_the_library():
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    for name in ["like_current", "add_current_to_playlist", "remove_from_playlist", "create_playlist"]:
+        assert "changes the user's library" in tools[name].description.lower(), name
+        assert tools[name].annotations.readOnlyHint is False
+    assert tools["remove_from_playlist"].annotations.destructiveHint is True
+    assert tools["find_playlist"].annotations.readOnlyHint is True
 
 
 def test_absurd_number_is_a_bad_request(use):
