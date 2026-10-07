@@ -19,13 +19,15 @@ python -m venv .venv
 
 ### 2. First Run - Authenticate
 
-Run once to authorize with your Spotify account:
+Run once in a terminal to authorize with your Spotify account:
 
 ```bash
-~/spotify-mcp/.venv/bin/spotify-mcp
+~/spotify-mcp/.venv/bin/spotify-mcp --login
 ```
 
-This opens your browser for Spotify login. After authorizing, the token is cached at `~/.spotify-mcp-token`.
+This opens your browser for Spotify login. After authorizing, the token is cached at `~/.spotify-mcp-token`
+and refreshed automatically from then on. The server itself never opens a browser: if a tool call
+finds no usable token it returns an `auth` error that tells you to run `--login`.
 
 ### 3. Add to Claude Code
 
@@ -54,7 +56,7 @@ Restart Claude Code and you're ready!
 ## Available Tools
 
 ### Playback Control
-- `play` - Resume or play specific track/album/playlist
+- `play` - Resume, or play a track (`uri`) or an album/playlist/artist (`context_uri`)
 - `pause` - Pause playback
 - `next` - Skip to next track
 - `previous` - Go to previous track
@@ -70,14 +72,18 @@ Restart Claude Code and you're ready!
 - `get_devices` - List available devices
 
 ### Search & Library
-- `search` - Search for tracks, albums, artists, playlists
+- `search` - Search for tracks, albums, artists, playlists (at most 10 per type; Spotify rejects more)
 - `add_to_queue` - Add track to queue
 - `get_playlists` - List your playlists
-- `get_playlist_tracks` - Get tracks from a playlist
+- `get_playlist_tracks` - Get tracks from a playlist (Spotify refuses some playlists the user does not own: `forbidden`)
 - `add_to_playlist` - Add tracks to a playlist *(requires own app)*
 - `save_tracks` - Save tracks to your library *(requires own app)*
 - `remove_saved_tracks` - Remove tracks from library *(requires own app)*
 - `get_saved_tracks` - Get your liked tracks
+
+Spotify moved playlist contents to `/playlists/{id}/items` and library writes to `/me/library`
+in 2026; the old endpoints answer 403. The server uses the new ones and falls back to the old
+ones only when the new one is missing (404).
 
 ### Local Favorites
 No Spotify API permissions needed - stored locally in `~/.spotify-mcp-favorites.json`:
@@ -86,6 +92,98 @@ No Spotify API permissions needed - stored locally in `~/.spotify-mcp-favorites.
 - `remove_favorite` - Remove a track from favorites
 - `play_favorites` - Play random favorite or queue all favorites
 - `clear_favorites` - Clear all favorites
+
+## URIs and links
+
+Every argument that takes a Spotify URI also takes an `open.spotify.com` link (with or without
+`https://`, an `intl-xx/` prefix or a `?si=` query) and the old `spotify:user:<name>:playlist:<id>`
+form. Playlist and track ID arguments also take a bare ID.
+
+`play` puts each URI where Spotify needs it, whichever argument it came in:
+
+| You pass | Sent to Spotify |
+|---|---|
+| a track or episode, in `uri` or `context_uri` | `uris: [track]` |
+| an album, playlist, artist or show, in `uri` or `context_uri` | `context_uri` |
+| a track in `uri` and an album or playlist in `context_uri` | the album/playlist, starting at that track |
+| nothing | resume |
+
+So a track passed as `context_uri` no longer fails with 400 "Non supported context uri".
+`add_to_queue` takes tracks and episodes only and says so if given an album.
+
+## Errors
+
+Every failed call returns one JSON object, with the MCP `isError` flag set:
+
+```json
+{"error": "No Spotify device is active. Open Spotify on a computer or phone, or name a device_id from get_devices.",
+ "code": "no_active_device", "status": 404, "details": "Player command failed: No active device found"}
+```
+
+- `error`: one plain sentence, fit to show or speak. Never a traceback, URL or token.
+- `code`: a stable category to branch on (below).
+- `status`: the HTTP status, when Spotify answered with one.
+- `details`: Spotify's own message without the URL, when there is one.
+
+The keys are always a subset of `error`, `code`, `status`, `details`, `message`.
+
+| code | Meaning |
+|---|---|
+| `no_active_device` | Nothing is playing anywhere and no device was given. |
+| `not_found` | No such track/playlist/etc., or nothing is playing (`favorite_current`). |
+| `rate_limited` | Spotify sent 429 with a longer wait than the server will sit through; the message says when to retry. |
+| `network` | Spotify could not be reached, or did not answer within the call's time budget. |
+| `auth` | Not signed in, or the sign-in expired or was revoked. Run `spotify-mcp --login`. |
+| `premium_required` | The command needs Spotify Premium. |
+| `restricted` | Spotify refused a player command ("Restriction violated"): usually already playing/paused, or the device does not allow it. |
+| `forbidden` | Spotify does not let this app do that (403), e.g. a playlist the user does not own. |
+| `bad_request` | A missing or invalid argument, or Spotify rejected the request (400). |
+| `unavailable` | Spotify answered with a 5xx. |
+| `internal` | A bug in this server; details go to its stderr log. |
+
+Arguments are checked by the server rather than by the MCP SDK, so a missing argument comes back
+in this shape too ("Missing argument: position_ms."). Near misses are accepted: `"50"` or `"50%"`
+for a number, `"on"`/`"off"` for a boolean, `"all"`/`"one"` for repeat, a single string for a list.
+
+## Reliability
+
+- **Stale connections.** Spotify's edge closes an idle keep-alive connection after about ten
+  minutes, and a request sent on it at that moment fails at once with `RemoteDisconnected`.
+  The server closes pooled connections that have been idle for 120 seconds (time asleep counts),
+  so the next call opens a fresh one, and if a connection still fails it retries:
+  - before anything was sent (refused, DNS, connect timeout): any request, up to twice;
+  - after the request may have been sent (reset, closed without answer, read timeout): only
+    GET, PUT and DELETE, which set state and are safe to repeat (play, pause, volume, shuffle,
+    repeat, seek, transfer, save/remove tracks). POST is not repeated, because `next`,
+    `previous`, `add_to_queue` and `add_to_playlist` would act twice;
+  - the token refresh (a POST) is retried, because the next call would retry it anyway.
+- **IPv4 first.** New connections try IPv4 addresses first and give each address 1.5 seconds,
+  so a broken IPv6 route costs nothing instead of a full timeout per connection.
+- **Rate limits.** A 429 with `Retry-After` of up to 5 seconds is waited out and retried (twice at
+  most). A longer wait returns `rate_limited` at once. A 5xx on GET/PUT/DELETE is retried up to twice.
+- **Bounded calls.** Every tool call has a 15-second budget shared by all of its requests;
+  connect timeout 3 s and read timeout 8 s per attempt, never past the budget. The token refresh
+  has the same limits (spotipy's own has no timeout).
+- **401.** A 401 on a token that should still be valid forces one refresh and one retry.
+- **Shared token cache.** Several server processes (for example one per client) can share
+  `~/.spotify-mcp-token`: it is written atomically in spotipy's format, and a read that catches
+  another process mid-write is retried.
+
+## Settings
+
+Environment variables, all optional:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SPOTIFY_MCP_AUTO_DEVICE` | `off` | `auto`: when `play` finds no active device, start on the only available device, or on the device this server last saw active. With several devices and no known last one it lists them in the error instead of guessing. |
+| `SPOTIFY_MCP_COMPACT` | off | `1`: smaller results for small context windows (search returns 5 per type by default, no artist genres, no album or `added_at` in playlist and Liked Songs listings, queue capped at 10). |
+| `SPOTIFY_MCP_CALL_TIMEOUT` | `15` | Seconds one tool call may take in total. |
+| `SPOTIFY_MCP_CONNECT_TIMEOUT` | `3` | Connect timeout per attempt, seconds. |
+| `SPOTIFY_MCP_READ_TIMEOUT` | `8` | Read timeout per attempt, seconds. |
+| `SPOTIFY_MCP_IDLE_RESET` | `120` | Seconds idle after which pooled connections are dropped. |
+| `SPOTIFY_MCP_MAX_RETRY_AFTER` | `5` | Longest `Retry-After` the server waits out, seconds. |
+
+Results are compact JSON (no indentation) in every mode.
 
 ## Usage Examples
 
@@ -111,19 +209,34 @@ The bundled client ID is in Spotify's Development Mode, which restricts write op
    ```
    SPOTIPY_CLIENT_ID=your_client_id_here
    ```
-4. Delete cached token and re-auth:
+4. Delete the cached token and sign in again:
    ```bash
    rm ~/.spotify-mcp-token
+   ~/spotify-mcp/.venv/bin/spotify-mcp --login
    ```
 5. Restart the MCP server
 
 ## Troubleshooting
 
 ### "No active device" error
-Make sure Spotify is open on at least one device (phone, desktop app, web player).
+Make sure Spotify is open on at least one device (phone, desktop app, web player), or set
+`SPOTIFY_MCP_AUTO_DEVICE=auto` to let `play` start on the only available device.
 
-### Authentication issues
-Delete `~/.spotify-mcp-token` and run `spotify-mcp` again to re-authenticate.
+### Authentication issues (`"code": "auth"`)
+Run `spotify-mcp --login` in a terminal. If that does not help, delete `~/.spotify-mcp-token` first.
 
 ### Token expired
-The token auto-refreshes, but if issues persist, delete `~/.spotify-mcp-token` and re-auth.
+The token auto-refreshes. If Spotify revokes it, calls return an `auth` error; run `spotify-mcp --login`.
+
+### Logs
+The server logs one line per failed call and per retry to stderr, never tokens or request bodies.
+
+## Development
+
+```bash
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest
+```
+
+The tests run offline: a throwaway `HOME`, no DNS for anything but localhost, and Spotify's
+answers scripted at the HTTP adapter or served by a local keep-alive server.
