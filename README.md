@@ -56,6 +56,7 @@ Restart Claude Code and you're ready!
 ### Playback Control
 - `play` - Resume, or play a track (`uri`), an album/playlist/artist (`context_uri`), or one of
   your playlists by name (`playlist`)
+- `play_liked` - Play your Liked Songs, shuffled unless `shuffle: false` (see below)
 - `pause` - Pause playback
 - `next` - Skip to next track
 - `previous` - Go to previous track
@@ -103,6 +104,17 @@ Spotify moved playlist contents to `/playlists/{id}/items`, library writes to `/
 playlist creation to `/me/playlists` in 2026; the old endpoints answer 403. The server uses the
 new ones and falls back to the old ones only when the new one is missing (404).
 
+### Favourites are Liked Songs
+"Favourites" are Liked Songs: `like_current` adds the playing track, `play_liked` plays them,
+`get_saved_tracks` lists them. (An earlier local favorites file, `~/.spotify-mcp-favorites.json`,
+and its five tools were removed; the server no longer reads that file.)
+
+`play_liked` starts up to 50 Liked Songs as a track list: by default a random page of 50, shuffled;
+with `shuffle: false` the 50 newest in order. Spotify documents only albums, artists and playlists
+as playback contexts, and has refused Liked Songs' own URI (`spotify:user:<id>:collection`) with
+"Non supported context uri" and `PLAYER_COMMAND_REJECTED`, so the server reads the saved tracks
+and plays them by URI. It is one play call: nothing is added to the queue.
+
 ## Playlist names
 
 `add_current_to_playlist`, `remove_from_playlist`, `find_playlist` and `play`'s `playlist` take a
@@ -120,14 +132,6 @@ so the model can ask which one. Nothing found gives `not_found` with the closest
 The write tools only look at playlists you own or that are collaborative; a name that only
 matches someone else's playlist gives `forbidden`. Your playlist list is cached for 60 seconds
 and re-read after every write.
-
-### Local Favorites
-No Spotify API permissions needed - stored locally in `~/.spotify-mcp-favorites.json`:
-- `favorite_current` - Add currently playing track to favorites
-- `get_favorites` - List all favorited tracks
-- `remove_favorite` - Remove a track from favorites
-- `play_favorites` - Play random favorite or queue all favorites
-- `clear_favorites` - Clear all favorites
 
 ## URIs and links
 
@@ -166,7 +170,7 @@ The keys are always a subset of `error`, `code`, `status`, `details`, `message`.
 | code | Meaning |
 |---|---|
 | `no_active_device` | Nothing is playing anywhere and no device was given. |
-| `not_found` | No such track/playlist/etc., no playlist matches the name, or nothing is playing (`like_current`, `add_current_to_playlist`, `favorite_current`). |
+| `not_found` | No such track/playlist/etc., no playlist matches the name, nothing is playing (`like_current`, `add_current_to_playlist`), or Liked Songs is empty (`play_liked`). |
 | `rate_limited` | Spotify sent 429 with a longer wait than the server will sit through; the message says when to retry. |
 | `network` | Spotify could not be reached, or did not answer within the call's time budget. |
 | `auth` | Not signed in, or the sign-in expired or was revoked. Run `spotify-mcp --login`. |
@@ -190,7 +194,7 @@ for a number, `"on"`/`"off"` for a boolean, `"all"`/`"one"` for repeat, a single
   - before anything was sent (refused, DNS, connect timeout): any request, up to twice;
   - after the request may have been sent (reset, closed without answer, read timeout): only
     GET, PUT and DELETE, which set state and are safe to repeat (play, pause, volume, shuffle,
-    repeat, seek, transfer, save/remove tracks, remove from a playlist). POST is not repeated,
+    repeat, seek, transfer, play_liked, save/remove tracks, remove from a playlist). POST is not repeated,
     because `next`, `previous`, `add_to_queue`, `add_to_playlist`, `add_current_to_playlist`
     and `create_playlist` would act twice;
   - the token refresh (a POST) is retried, because the next call would retry it anyway.
@@ -233,7 +237,8 @@ Once configured, you can ask Claude:
 - "Set the volume to 50%"
 - "Turn on shuffle"
 - "Show my playlists"
-- "I like this song" (`like_current`)
+- "I like this song" or "add this to my favourites" (`like_current`)
+- "Play my favourites" (`play_liked`)
 - "Add this to my running playlist" (`add_current_to_playlist`)
 - "Play my Schranz playlist" (`play` with `playlist`)
 
