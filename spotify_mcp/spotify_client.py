@@ -194,7 +194,7 @@ class SpotifyClient:
         tracks = [item["track"] for item in page.get("items") or []
                   if (item or {}).get("track") and str(item["track"].get("uri", "")).startswith("spotify:track:")]
         if not tracks:
-            raise ToolError(NOT_FOUND, "Liked Songs is empty.")
+            raise ToolError(NOT_FOUND, "There are no Liked Songs yet.")
         if shuffle:
             random.shuffle(tracks)
         order = "shuffled" if shuffle else "newest first"

@@ -167,7 +167,8 @@ def test_play_liked_skips_local_files_and_reports_an_empty_library(make):
     client, adapter, _ = make([local])
     with pytest.raises(ToolError) as caught:
         client.play_liked()
-    assert caught.value.code == "not_found" and len(adapter.sent) == 1
+    assert caught.value.code == "not_found" and caught.value.message == "There are no Liked Songs yet."
+    assert len(adapter.sent) == 1
 
 
 def test_play_liked_uses_auto_device(make):
