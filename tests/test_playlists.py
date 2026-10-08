@@ -6,7 +6,7 @@ import pytest
 
 from spotify_mcp import playlists, server
 from spotify_mcp.errors import ToolError
-from tests.test_client import PLAYING, TRACK, make  # noqa: F401 - make is a fixture
+from tests.test_client import NO_DEVICE, PLAYING, TRACK, make  # noqa: F401 - make is a fixture
 from tests.test_server import ALLOWED_KEYS, use  # noqa: F401 - use is a fixture
 
 ME = (200, {"id": "me", "display_name": "Me"})
@@ -121,6 +121,68 @@ def test_like_current_with_nothing_playing(use):  # noqa: F811
     use([NOTHING])
     data, is_error = server.run_tool("like_current", {})
     assert is_error and data == {"error": "Nothing is playing right now.", "code": "not_found"}
+
+
+# --- play_liked ----------------------------------------------------------------------------
+
+
+def saved(n, total=None, start=0):
+    tracks = [{"added_at": "2026-01-01T00:00:00Z", "track": {"uri": f"spotify:track:{start + i:0>22}",
+                                                             "name": f"Song {start + i}",
+                                                             "artists": [{"name": "Band"}]}}
+              for i in range(n)]
+    return (200, {"items": tracks, "total": n if total is None else total, "next": None})
+
+
+def test_play_liked_plays_saved_tracks_by_uri_not_the_collection(make, monkeypatch):
+    monkeypatch.setattr("random.shuffle", lambda rows: rows.reverse())
+    client, adapter, _ = make([saved(3), NOTHING])
+    result = client.play_liked()
+    assert sent(adapter) == [("GET", "me/tracks"), ("PUT", "me/player/play")]
+    uris = [f"spotify:track:{i:0>22}" for i in (2, 1, 0)]
+    assert body(adapter.sent[1]) == {"uris": uris}
+    assert result == {"success": True, "message": "Playing 3 of your 3 Liked Songs, shuffled",
+                      "first": "Song 2 – Band"}
+
+
+def test_play_liked_shuffle_picks_a_random_page_of_a_big_library(make, monkeypatch):
+    monkeypatch.setattr("random.randrange", lambda n: n - 1)
+    client, adapter, _ = make([saved(50, total=360), saved(50, total=360, start=310), NOTHING])
+    result = client.play_liked()
+    assert "offset=310" in adapter.sent[1].url and "limit=50" in adapter.sent[1].url
+    assert sorted(body(adapter.sent[2])["uris"]) == [f"spotify:track:{i:0>22}" for i in range(310, 360)]
+    assert result["message"] == "Playing 50 of your 360 Liked Songs, shuffled"
+
+
+def test_play_liked_without_shuffle_plays_the_newest_in_order(make):
+    client, adapter, _ = make([saved(50, total=360), NOTHING])
+    result = client.play_liked(shuffle=False)
+    assert len(adapter.sent) == 2
+    assert body(adapter.sent[1])["uris"][:2] == [f"spotify:track:{0:0>22}", f"spotify:track:{1:0>22}"]
+    assert result["message"] == "Playing 50 of your 360 Liked Songs, newest first"
+
+
+def test_play_liked_skips_local_files_and_reports_an_empty_library(make):
+    local = (200, {"items": [{"track": {"uri": "spotify:local:a:b:c:1", "name": "Demo"}}], "total": 1})
+    client, adapter, _ = make([local])
+    with pytest.raises(ToolError) as caught:
+        client.play_liked()
+    assert caught.value.code == "not_found" and len(adapter.sent) == 1
+
+
+def test_play_liked_uses_auto_device(make):
+    devices = (200, {"devices": [{"id": "dev1", "name": "Desktop", "is_active": False}]})
+    client, adapter, _ = make([saved(2), NO_DEVICE, devices, NOTHING], auto_device="auto")
+    result = client.play_liked(shuffle=False)
+    assert result["device"] == "Desktop" and "device_id=dev1" in adapter.sent[3].url
+    assert len(body(adapter.sent[3])["uris"]) == 2
+
+
+def test_play_liked_through_the_server(use):  # noqa: F811
+    adapter = use([saved(2), NOTHING])
+    data, is_error = server.run_tool("play_liked", {"shuffle": "off", "device_id": "dev9"})
+    assert not is_error and data["message"].endswith("newest first")
+    assert "device_id=dev9" in adapter.sent[1].url
 
 
 # --- add_current_to_playlist ---------------------------------------------------------------

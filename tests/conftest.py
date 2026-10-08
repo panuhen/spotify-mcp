@@ -1,10 +1,10 @@
-"""Test isolation: a throwaway HOME (no real token cache or favorites) and no internet."""
+"""Test isolation: a throwaway HOME (no real token cache) and no internet."""
 
 import os
 import socket
 import tempfile
 
-# Before spotify_mcp is imported: its token cache and favorites paths come from Path.home().
+# Before spotify_mcp is imported: its token cache path comes from Path.home().
 os.environ["HOME"] = tempfile.mkdtemp(prefix="spotify-mcp-test-home-")
 for name in list(os.environ):
     if name.startswith(("SPOTIFY_MCP_", "SPOTIPY_")):

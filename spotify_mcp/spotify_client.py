@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 import time
 from collections.abc import Callable
@@ -71,6 +72,7 @@ def _names(rows: list[dict[str, Any]]) -> str:
     return ", ".join(_short(r["name"]) for r in rows)
 
 
+LIKED_PAGE = 50  # Liked Songs play_liked starts: one page, Spotify's largest
 PLAYLIST_TTL = 60.0  # seconds the user's playlist list is reused between calls
 # Playlist contents, only what dedupe and results need. Spotify calls the entry "item" now and
 # called it "track" before.
@@ -156,7 +158,10 @@ class SpotifyClient:
         target = self._play_target(uri, context_uri)
         if position_ms:
             target["position_ms"] = position_ms
-        message = "Playback started" if target else "Playback resumed"
+        return self._start(target, device_id, "Playback started" if target else "Playback resumed")
+
+    def _start(self, target: dict[str, Any], device_id: str | None, message: str) -> dict[str, Any]:
+        """start_playback, moving to a device first when none is active and auto_device allows it."""
         try:
             self._api(self.sp.start_playback, device_id=device_id, **target)
         except SpotifyException as exc:
@@ -172,6 +177,31 @@ class SpotifyClient:
             self.last_device = device
             return {"success": True, "message": f"{message} on {device['name']}", "device": device["name"]}
         return {"success": True, "message": message}
+
+    def play_liked(self, shuffle: bool = True, device_id: str | None = None) -> dict[str, Any]:
+        """Play Liked Songs: one page of them as a track list, a random page shuffled by default.
+
+        Liked Songs is not a context the Web API documents for playback (albums, artists and
+        playlists are), and spotify:user:<id>:collection has been refused with 400 "Non supported
+        context uri" and 403 PLAYER_COMMAND_REJECTED. Track URIs in `uris` are documented.
+        """
+        page = self._api(self.sp.current_user_saved_tracks, limit=LIKED_PAGE) or {}
+        total = page.get("total") or 0
+        if shuffle and total > LIKED_PAGE:
+            offset = random.randrange(total - LIKED_PAGE + 1)
+            if offset:
+                page = self._api(self.sp.current_user_saved_tracks, limit=LIKED_PAGE, offset=offset) or {}
+        tracks = [item["track"] for item in page.get("items") or []
+                  if (item or {}).get("track") and str(item["track"].get("uri", "")).startswith("spotify:track:")]
+        if not tracks:
+            raise ToolError(NOT_FOUND, "Liked Songs is empty.")
+        if shuffle:
+            random.shuffle(tracks)
+        order = "shuffled" if shuffle else "newest first"
+        result = self._start({"uris": [t["uri"] for t in tracks]}, device_id,
+                             f"Playing {len(tracks)} of your {max(total, len(tracks))} Liked Songs, {order}")
+        result["first"] = _label(tracks[0])
+        return result
 
     def _pick_device(self) -> dict[str, Any] | None:
         """The device the user most likely means: the only one, or the last one seen active."""

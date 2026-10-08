@@ -95,20 +95,9 @@ def test_unknown_tool(use):
     assert is_error and data["code"] == "bad_request"
 
 
-def test_favorite_current_with_nothing_playing(use):
-    use([(204, None)])
-    data, is_error = server.run_tool("favorite_current", {})
-    assert is_error and data == {"error": "Nothing is playing right now.", "code": "not_found"}
-
-
-def test_local_tools_work_without_spotify(monkeypatch):
-    monkeypatch.setattr(server, "get_client", lambda: pytest.fail("local tools must not sign in"))
-    data, is_error = server.run_tool("get_favorites", {})
-    assert not is_error and data == {"favorites": [], "total": 0}
-
-
-# Every tool and argument main had, as (arguments, required). Clients call these by name, and
-# Strawberry lists its careful tools by name: none may disappear, be renamed, or become required.
+# Every tool and argument main had, as (arguments, required), less the retired local favorites.
+# Clients call these by name, and Strawberry lists its careful tools by name: none may disappear,
+# be renamed, or become required.
 MAIN_TOOLS = {
     "play": (["context_uri", "device_id", "uri"], []),
     "pause": (["device_id"], []),
@@ -130,13 +119,11 @@ MAIN_TOOLS = {
     "save_tracks": (["track_ids"], ["track_ids"]),
     "remove_saved_tracks": (["track_ids"], ["track_ids"]),
     "get_saved_tracks": (["limit"], []),
-    "favorite_current": ([], []),
-    "get_favorites": ([], []),
-    "remove_favorite": (["uri"], ["uri"]),
-    "play_favorites": (["shuffle"], []),
-    "clear_favorites": ([], []),
 }
-NEW_TOOLS = ["like_current", "add_current_to_playlist", "find_playlist", "remove_from_playlist", "create_playlist"]
+NEW_TOOLS = ["like_current", "add_current_to_playlist", "find_playlist", "remove_from_playlist", "create_playlist",
+             "play_liked"]
+# The local favorites file is gone: Liked Songs (like_current, play_liked) and playlists replace it.
+RETIRED_TOOLS = ["favorite_current", "get_favorites", "remove_favorite", "play_favorites", "clear_favorites"]
 
 
 def test_existing_tools_keep_their_names_and_arguments():
@@ -151,7 +138,17 @@ def test_tool_list_is_main_plus_the_new_tools():
     names = [tool.name for tool in asyncio.run(server.list_tools())]
     assert sorted(names) == sorted(list(MAIN_TOOLS) + NEW_TOOLS)
     assert len(set(names)) == len(names)
-    assert set(server.HANDLERS) | set(server.LOCAL_HANDLERS) == set(names)
+    assert set(server.HANDLERS) == set(names)
+    assert len(names) == 26
+
+
+def test_retired_favorites_tools_are_unknown(use):
+    use([])
+    names = {tool.name for tool in asyncio.run(server.list_tools())}
+    for name in RETIRED_TOOLS:
+        assert name not in names
+        data, is_error = server.run_tool(name, {})
+        assert is_error and data == {"error": f"Unknown tool: {name}.", "code": "bad_request"}
 
 
 def test_write_tools_say_they_change_the_library():

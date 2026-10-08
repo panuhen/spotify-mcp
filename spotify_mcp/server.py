@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -15,9 +14,9 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 
-from . import favorites, net, uris
+from . import net
 from .auth import get_spotify_client
-from .errors import BAD_REQUEST, NOT_FOUND, ToolError, from_exception
+from .errors import BAD_REQUEST, ToolError, from_exception
 from .spotify_client import SpotifyClient
 
 log = logging.getLogger("spotify_mcp.server")
@@ -74,6 +73,11 @@ TOOLS = [
             "playlist": {"type": "string", "description": "The user's playlist by name, ID or link."},
             "device_id": _DEVICE,
         },
+    ),
+    _tool(
+        "play_liked",
+        "Play the user's Liked Songs (their favourites), shuffled unless shuffle=false.",
+        {"shuffle": {"type": "boolean", "description": "Default true."}, "device_id": _DEVICE},
     ),
     _tool("pause", "Pause playback.", {"device_id": _DEVICE}),
     _tool("next", "Skip to the next track.", {"device_id": _DEVICE}),
@@ -198,21 +202,6 @@ TOOLS = [
          "force": {"type": "boolean", "description": "Create even if one by that name exists. Default false."}},
         ["name"], _WRITE,
     ),
-    # Local favorites (no Spotify API permissions needed)
-    _tool("favorite_current", "Add the playing track to local favorites (not Liked Songs)."),
-    _tool("get_favorites", "List the local favorites."),
-    _tool(
-        "remove_favorite",
-        "Remove a track from the local favorites. Needs uri.",
-        {"uri": {"type": "string", "description": "Track URI."}},
-        ["uri"],
-    ),
-    _tool(
-        "play_favorites",
-        "Play one random local favorite, or with shuffle=true queue all of them shuffled.",
-        {"shuffle": {"type": "boolean", "description": "Default false."}},
-    ),
-    _tool("clear_favorites", "Delete all local favorites."),
 ]
 
 
@@ -302,38 +291,11 @@ def _repeat_state(args: dict[str, Any]) -> str:
 # --- dispatch ----------------------------------------------------------------------------
 
 
-def _favorite_current(sp: SpotifyClient, _args: dict[str, Any]) -> dict[str, Any]:
-    current = sp.get_current_track()
-    if not current.get("track"):
-        raise ToolError(NOT_FOUND, "Nothing is playing right now.")
-    return favorites.add_favorite(current["track"])
-
-
-def _play_favorites(sp: SpotifyClient, args: dict[str, Any]) -> dict[str, Any]:
-    tracks = favorites.get_favorites().get("favorites") or []
-    if not tracks:
-        raise ToolError(NOT_FOUND, "No favorites saved yet.")
-    if not _bool(args, "shuffle", default=False):
-        track = random.choice(tracks)
-        sp.play(uri=track["uri"])
-        return {"success": True, "message": f"Playing '{track['name']}'"}
-    random.shuffle(tracks)
-    queued = 0
-    for track in tracks:
-        try:
-            sp.add_to_queue(track["uri"])
-        except Exception:
-            if queued == 0:
-                raise
-            return {"success": True, "message": f"Queued {queued} of {len(tracks)} favorites; then Spotify stopped "
-                    "answering"}
-        queued += 1
-    return {"success": True, "message": f"Queued {queued} favorites"}
-
-
 HANDLERS: dict[str, Callable[[SpotifyClient, dict[str, Any]], dict[str, Any]]] = {
     "play": lambda sp, a: sp.play(uri=_str(a, "uri"), context_uri=_str(a, "context_uri"),
                                   device_id=_str(a, "device_id"), playlist=_str(a, "playlist")),
+    "play_liked": lambda sp, a: sp.play_liked(shuffle=_bool(a, "shuffle", default=True),
+                                              device_id=_str(a, "device_id")),
     "pause": lambda sp, a: sp.pause(device_id=_str(a, "device_id")),
     "next": lambda sp, a: sp.next_track(device_id=_str(a, "device_id")),
     "previous": lambda sp, a: sp.previous_track(device_id=_str(a, "device_id")),
@@ -366,21 +328,6 @@ HANDLERS: dict[str, Callable[[SpotifyClient, dict[str, Any]], dict[str, Any]]] =
     "create_playlist": lambda sp, a: sp.create_playlist(_str(a, "name", required=True), _str(a, "description"),
                                                         public=_bool(a, "public", default=False),
                                                         force=_bool(a, "force", default=False)),
-    "favorite_current": _favorite_current,
-    "play_favorites": _play_favorites,
-}
-
-def _favorite_uri(args: dict[str, Any]) -> str:
-    raw = _str(args, "uri", required=True)
-    parsed = uris.parse(raw)
-    return parsed[1] if parsed else raw
-
-
-# Local-only tools: they never touch the Spotify API, so they work even when signing in does not.
-LOCAL_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "get_favorites": lambda a: favorites.get_favorites(),
-    "remove_favorite": lambda a: favorites.remove_favorite(_favorite_uri(a)),
-    "clear_favorites": lambda a: favorites.clear_favorites(),
 }
 
 
@@ -393,8 +340,6 @@ def run_tool(name: str, arguments: dict[str, Any] | None) -> tuple[dict[str, Any
     arguments = arguments if isinstance(arguments, dict) else {}
     try:
         with net.call_budget():
-            if name in LOCAL_HANDLERS:
-                return LOCAL_HANDLERS[name](arguments), False
             handler = HANDLERS.get(name)
             if handler is None:
                 raise ToolError(BAD_REQUEST, f"Unknown tool: {name}.")
